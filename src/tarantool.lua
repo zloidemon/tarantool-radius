@@ -1,7 +1,7 @@
 box.cfg{
 	background = 0,
-	admin_port = 33014,
-	primary_port = 33013,
+	admin    = 33014,
+	listen   = 33013,
 	snap_dir = 'tarantool',
 	wal_dir  = 'tarantool',
 --	logger   = 'cat - > tarantool/salt.log',

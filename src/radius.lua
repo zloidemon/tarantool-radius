@@ -1,3 +1,4 @@
+log    = require('log')
 pickle = require('pickle')
 digest = require('digest')
 socket = require('socket')
@@ -10,7 +11,7 @@ radius = {
 		acct = 1813,
 		auth = 1812,
 	},
-	host = '127.0.0.1',
+	host = '0.0.0.0',
 
 	-- Servers objects
 	acct = nil,
@@ -107,13 +108,17 @@ function radius:unpack(msg, host, secret)
 			txtatype == 'Service-Type'	 then
 
 			if
-				txtatype =='NAS-IP-Address' or
-				txtatype =='Framed-IP-Address' then
+				txtatype == 'NAS-IP-Address' or
+				txtatype == 'Framed-IP-Address' then
 				var = self:intip_to_strip(attrdat)
 			else
 				var = pickle.unpack('N', string.sub(attrdat, 3, atlen))
 			end
-			if 'Service-Type' == txtatype then
+			if
+				txtatype == 'Service-Type' or
+				txtatype == 'Acct-Status-Type' or
+				txtatype == 'Framed-Protocol' or
+				txtatype == 'NAS-Port-Type' then
 				var = self.rp[txtatype][var]
 			end
 		else
@@ -151,31 +156,39 @@ function radius:unpack(msg, host, secret)
 					[6]  = 2   -- Service-Type
 				}
 				datagramm = self:pack(secret, id, authenticator, 2, 44, attr)
-				spaces.sessions:insert{
-					attributes['Acct-Session-Id'],
-					attributes['User-Name'],
-					attributes['Calling-Station-Id'],
-					host,
-					attributes['NAS-Identifier'],
-					0, -- Time
-					0, -- In
-					0, -- Out
-				}
 				log.info('User %s has authenticated', username)
 			end
 		end
 	elseif Code == 'Accounting-Request' then
-		log.info('Incomming accounting request')
-		if
-			attributes['Acct-Session-Time'] and
-			attributes['Acct-Input-Octets'] and
-			attributes['Acct-Output-Octets'] then
+		local accstatus = attributes['Acct-Status-Type']
+		local accsid    = attributes['Acct-Session-Id']
 
-			spaces.sessions:update(attributes['Acct-Session-Id'], {
-						{'=', 6, attributes['Acct-Session-Time']},
-						{'+', 7, attributes['Acct-Input-Octets']},
-						{'+', 8, attributes['Acct-Output-Octets']},
-				})
+		log.info('Incomming accounting request sid: %s\t%s', accsid, accstatus)
+
+		if 'Start' == accstatus then
+			spaces.sessions:insert{
+				accsid, attributes['User-Name'],
+				attributes['Calling-Station-Id'],
+				host, attributes['NAS-Identifier'],
+				0, 0, 0,      -- Session time, In, Out
+				os.time(), 0, -- Start time, End time
+			}
+		elseif 'Interim-Update' == accstatus or 'Stop' == accstatus then
+			local stime  = attributes['Acct-Session-Time']
+			local sinoc  = attributes['Acct-Input-Octets']
+			local soutoc = attributes['Acct-Output-Octets']
+			local sidata = {
+				{'=', 6, stime}, {'+', 7, sinoc},
+				{'+', 8, soutoc}
+			}
+			if 'Stop' == accstatus then
+				local endtime = os.time()
+				table.insert(sidata, {'=', 10, endtime})
+				log.info("Session %s ended at %s", accsid, os.date('%c', endtime))
+			end
+			spaces.sessions:update(accsid, sidata)
+		else
+			log.error('%s called not implimented command: %s', accsid, accstatus)
 		end
 		-- 5 is Accounting-Response
 		datagramm = self:pack(secret, id, authenticator, 5, 20)
@@ -189,6 +202,7 @@ function radius:unpack(msg, host, secret)
 end
 
 function radius:pack(secret, id, authenticator, code, length, attr)
+	log.debug('Packing response to %s', id)
 	local attr_p = nil
 
 	if attr == nil then
@@ -251,7 +265,7 @@ function radius:run(name)
 	self[name] = sock;
 
 	log.info("bound to udp port: %d", port)
-	local f = fiber.wrap(self.server, self, name)
+	local f = fiber.create(self.server, self, name)
 end
 
 return radius
