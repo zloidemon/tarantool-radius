@@ -2,17 +2,16 @@
 
 dofile('tarantool.lua')
 
-radius = require('radius')
+local radius = require('radius')
+local spaces = require('spaces')
 
--- You can change that options
--- radius.host = '127.0.0.1'
--- radius.port.acct = 1813
--- radius.port.auth = 1812
+box.once('radius:spaces', function ()
+    spaces:init()
+end)
 
 -- Init servers
-if (radius.auth == nil) then
-	radius.run(radius, 'auth')
-end
-if (radius.acct == nil) then
-	radius.run(radius, 'acct')
-end
+
+acct = radius:run('acct', '127.0.0.1', 1813)
+auth = radius:run('auth', '127.0.0.1', 1812)
+
+require('console').start()

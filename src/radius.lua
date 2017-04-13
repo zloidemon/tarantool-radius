@@ -1,56 +1,42 @@
-log    = require('log')
-pickle = require('pickle')
-digest = require('digest')
-socket = require('socket')
-fiber  = require('fiber')
-spaces = require('spaces')
+local log    = require('log')
+local pickle = require('pickle')
+local digest = require('digest')
+local fiber  = require('fiber')
+local spaces = require('spaces')
+local udp    = require('udp')
 
-radius = {
-	version = 0.1,
-	port = {
-		acct = 1813,
-		auth = 1812,
-	},
-	host = '0.0.0.0',
-
-	-- Servers objects
-	acct = nil,
-	auth = nil,
-	rp = require('rp'),
-}
-
-function radius:sxor(a,b)
-	local x,y,x1,y1,out = a,b,0,0,''
+local function sxor(self, a, b)
+	local x, y, x1, y1, out = a, b, 0, 0, ''
 	while(#x >= 4) do
-		x1,x = pickle.unpack('ia',x)
-		y1,y = pickle.unpack('ia',y)
-		local topack = bit.bxor(x1,y1)
+		x1, x = pickle.unpack('ia', x)
+		y1, y = pickle.unpack('ia', y)
+		local topack = bit.bxor(x1, y1)
 		if 0 > topack then
 			return nil
 		end
-		out = out .. pickle.pack('i',topack)
+		out = out .. pickle.pack('i', topack)
 	end
 	while (#x > 0) do
-		x1,x = pickle.unpack('ba',x)
-		y1,y = pickle.unpack('ba',y)
-		out = out .. pickle.pack('b',bit.bxor(x1,y1))
+		x1, x = pickle.unpack('ba', x)
+		y1, y = pickle.unpack('ba', y)
+		out = out .. pickle.pack('b', bit.bxor(x1, y1))
 	end 
 	return out
 end
 
-function radius:bintohex(s)
+local function bintohex(self, s)
 	return (s:gsub('(.)', function(c)
 		return string.format('%02x', string.byte(c))
 	end))
 end
 
-function radius:hextobin(s)
+local function hextobin(self, s)
 	return (s:gsub('(%x%x)', function(hex)
 		return string.char(tonumber(hex, 16))
 	end))
 end
 
-function radius:decode_password(pw, last, secret)
+local function decode_password(self, pw, last, secret)
 	local out = ''
 	while (#pw > 0) do 
 		local pw1 = string.sub(pw, 1, 16)
@@ -65,7 +51,7 @@ function radius:decode_password(pw, last, secret)
 	return string.format("%s", out)
 end
 
-function radius:intip_to_strip(ip)
+local function intip_to_strip(self, ip)
 	local o0, o1, o2, o3 = pickle.unpack('bbbb', string.sub(attrdat, 3, 6))
 	o0 = bit.band(o0, 0xff)
 	o1 = bit.band(o1, 0xff)
@@ -75,7 +61,7 @@ function radius:intip_to_strip(ip)
 	return string.format("%d.%d.%d.%d", o0, o1, o2, o3)
 end
 
-function radius:unpack(msg, host, secret)
+local function unpack(self, msg, host, secret)
 	local datagramm = nil
 
 	local code, id, len, tail  = pickle.unpack('bbna', msg)
@@ -136,7 +122,7 @@ function radius:unpack(msg, host, secret)
 	if Code == 'Access-Request' then
 		local username = attributes['User-Name']
 		local userpass = attributes['User-Password']
-		local user = spaces.users:get{username}
+		local user = box.space.users:get{username}
 
 		if not userpass then
 			log.error('Incorrect radius client %s passsword', host)
@@ -166,7 +152,7 @@ function radius:unpack(msg, host, secret)
 		log.info('Incomming accounting request sid: %s\t%s', accsid, accstatus)
 
 		if 'Start' == accstatus then
-			spaces.sessions:insert{
+			box.space.sessions:insert{
 				accsid, attributes['User-Name'],
 				attributes['Calling-Station-Id'],
 				host, attributes['NAS-Identifier'],
@@ -186,7 +172,7 @@ function radius:unpack(msg, host, secret)
 				table.insert(sidata, {'=', 10, endtime})
 				log.info("Session %s ended at %s", accsid, os.date('%c', endtime))
 			end
-			spaces.sessions:update(accsid, sidata)
+			box.space.sessions:update(accsid, sidata)
 		else
 			log.error('%s called not implimented command: %s', accsid, accstatus)
 		end
@@ -201,7 +187,7 @@ function radius:unpack(msg, host, secret)
 	return datagramm
 end
 
-function radius:pack(secret, id, authenticator, code, length, attr)
+local function pack(self, secret, id, authenticator, code, length, attr)
 	log.debug('Packing response to %s', id)
 	local attr_p = nil
 
@@ -237,35 +223,46 @@ function radius:pack(secret, id, authenticator, code, length, attr)
 	return datagramm
 end
 
-function radius:server(name)
-	fiber.name(name)
-	local server = self[name]
-	log.info('listening RADIUS(%s)', name)
-	while true do
-		local msg, status, host, port = server:recvfrom(10000)
-		local rclient = spaces.servers:get{host}
-		if rclient then
-			local datagramm = self:unpack(msg, host, rclient[2])
-			log.info('connection from %s on port %d', host, port)
+local function server(self, s, peer, msg)
+    local host, port = peer.host, peer.port
+	local rclient = box.space.servers:get{host}
 
-			if not server:sendto(datagramm, host, port, 1) then
-				log.error("code: %s text: %s", server:errno(), server:error())
-			end
-		end
-	    end
+	if rclient then
+		local datagramm = self:unpack(msg, host, rclient[1])
+		log.info('connection from %s on port %d', host, port)
+		s:sendto(host, port, datagramm)
+    else
+		s:sendto(host, port, 'bad datagramm\n')
+	end
 end
 
-function radius:run(name)
-	spaces:init()
-	local sock = socket.udp()
-	local port = self.port[name]
-	log.info('running RADIUS(%s) server on: %s:%d', name, radius.host, port)
-	sock:bind(radius.host, port, 1);
-	sock:listen()
-	self[name] = sock;
+local function run(self, name, host, port)
+	log.info('running RADIUS(%s) server on: %s:%d', name, host, port)
 
-	log.info("bound to udp port: %d", port)
-	local f = fiber.create(self.server, self, name)
+    local server = udp.udp_server(host, port,
+        {
+            name = name, handler = function (...)
+                self:server(...) end
+        })
+
+	log.info('bound to udp port: %d', port)
 end
+
+local radius = {
+	version = 0.1,
+
+	-- Servers objects
+	rp = require('rp'),
+
+    pack = pack,
+    unpack = unpack,
+    decode_password = decode_password,
+    sxor = sxor,
+    bintohex = bintohex,
+    hextobin = hextobin,
+    intip_to_strip = intip_to_strip,
+    server = server,
+    run = run,
+}
 
 return radius
