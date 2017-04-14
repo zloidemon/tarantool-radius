@@ -51,7 +51,7 @@ local function decode_password(self, pw, last, secret)
     return string.format("%s", out)
 end
 
-local function intip_to_strip(self, ip)
+local function intip_to_strip(self, attrdat)
     local o0, o1, o2, o3 = pickle.unpack('bbbb', string.sub(attrdat, 3, 6))
     o0 = bit.band(o0, 0xff)
     o1 = bit.band(o1, 0xff)
@@ -67,34 +67,35 @@ local function unpack(self, msg, host, secret)
     local code, id, len, tail  = pickle.unpack('bbna', msg)
     local authenticator        = pickle.unpack('a', string.sub(tail, 0, 16))
     local startlen, atype, var = 16, 0, nil
+    local atlen
 
     local Code = self.rp.codes[code]
     local attributes = {}
 
     while (startlen + 5) < len  do
-        attrdat      = string.sub(tail, startlen + 1)
-        atype, atlen = pickle.unpack('bb', string.sub(attrdat, 0, 2))
+        local attrdat      = string.sub(tail, startlen + 1)
+        local atype, atlen = pickle.unpack('bb', string.sub(attrdat, 0, 2))
 
         local txtatype = self.rp.attr[atype]
 
         if
-            txtatype == 'Acct-Status-Type'        or
+            txtatype == 'Acct-Status-Type'      or
             txtatype == 'Acct-Output-Octets'    or
             txtatype == 'Acct-Input-Octets'     or
             txtatype == 'Acct-Session-Time'     or
             txtatype == 'Acct-Input-Gigawords'  or
             txtatype == 'Acct-Output-Gigawords' or
-            txtatype == 'Framed-IP-Address'        or
+            txtatype == 'Framed-IP-Address'     or
             txtatype == 'NAS-IP-Address'        or
-            txtatype == 'NAS-Port'            or
-            txtatype == 'NAS-Port-Type'        or
+            txtatype == 'NAS-Port'              or
+            txtatype == 'NAS-Port-Type'         or
             txtatype == 'Framed-Protocol'       or
             txtatype == 'Framed-Compression'    or
             txtatype == 'Acct-Interim-Interval' or
-            txtatype == 'Service-Type'     then
+            txtatype == 'Service-Type'             then
 
             if
-                txtatype == 'NAS-IP-Address' or
+                txtatype == 'NAS-IP-Address'     or
                 txtatype == 'Framed-IP-Address' then
                 var = self:intip_to_strip(attrdat)
             else
@@ -121,7 +122,7 @@ local function unpack(self, msg, host, secret)
 
     if Code == 'Access-Request' then
         local username = attributes['User-Name']
-        local userpass = attributes['User-Password']
+        local userpass = attributes['User-Password']:gsub('%z', '') -- Remove all \0 from the string because it fills by \0 empty bytes
         local user = box.space.users:get{username}
 
         if not userpass then
@@ -132,7 +133,7 @@ local function unpack(self, msg, host, secret)
             datagramm = self:pack(secret, id, authenticator, 3, 20)
         else
             if user[2] ~= userpass then
-                log.error('Incorrect password user: %s', username)
+                log.error('Incorrect password for "%s" user: %s != %s', username, user[2], userpass)
                 datagramm = self:pack(secret, id, authenticator, 3, 20)
             else
                 local attr = {
@@ -228,7 +229,7 @@ local function server(self, s, peer, msg)
     local rclient = box.space.servers:get{host}
 
     if rclient then
-        local datagramm = self:unpack(msg, host, rclient[1])
+        local datagramm = self:unpack(msg, host, rclient[2])
         log.info('connection from %s on port %d', host, port)
         s:sendto(host, port, datagramm)
     else
