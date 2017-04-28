@@ -127,22 +127,23 @@ local function unpack(self, msg, host, secret)
 
         if not userpass then
             log.error('Incorrect radius client %s passsword', host)
-            datagramm = self:pack(secret, id, authenticator, 3, 20)
+            datagramm = self:pack(secret, id, authenticator, 3)
         elseif not user then
             log.error('User not found in db: %s', username)
-            datagramm = self:pack(secret, id, authenticator, 3, 20)
+            datagramm = self:pack(secret, id, authenticator, 3)
         else
             if user[2] ~= userpass then
                 log.error('Incorrect password for "%s" user: %s != %s', username, user[2], userpass)
-                datagramm = self:pack(secret, id, authenticator, 3, 20)
+                datagramm = self:pack(secret, id, authenticator, 3)
             else
                 local attr = {
-                    [7]  = 1,  -- Framed-Protocol
-                    [13] = 1,  -- Framed-Compression
-                    [85] = 60, -- Acct-Interim-Interval
-                    [6]  = 2   -- Service-Type
+                -- type, value
+                    {7,  1},  -- Framed-Protocol
+                    {13, 1},  -- Framed-Compression
+                    {85, 60}, -- Acct-Interim-Interval
+                    {6,  2}   -- Service-Type
                 }
-                datagramm = self:pack(secret, id, authenticator, 2, 44, attr)
+                datagramm = self:pack(secret, id, authenticator, 2, attr)
                 log.info('User %s has authenticated', username)
             end
         end
@@ -178,25 +179,27 @@ local function unpack(self, msg, host, secret)
             log.error('%s called not implimented command: %s', accsid, accstatus)
         end
         -- 5 is Accounting-Response
-        datagramm = self:pack(secret, id, authenticator, 5, 20)
+        datagramm = self:pack(secret, id, authenticator, 5)
     else
         log.error('Not implimented code: %s', Code)
         -- 3 is Access-Reject
-        datagramm = self:pack(secret, id, authenticator, 3, 20)
+        datagramm = self:pack(secret, id, authenticator, 3)
     end
 
     return datagramm
 end
 
-local function pack(self, secret, id, authenticator, code, length, attr)
+local function pack(self, secret, id, authenticator, code, attr)
     log.debug('Packing response to %s', id)
     local attr_p = nil
+    local length = 0
 
     if attr == nil then
         attr = {}
     end
 
-    for atype, var in pairs(attr) do
+    for _, att in pairs(attr) do
+        local atype, var = att[1], att[2]
         log.debug('%10d\t%5s\t[%2s]\t%20s\t%s\t', id, 6, atype, self.rp.attr[atype], var)
         local attr_header = pickle.pack('bb', atype, 6)
         local attr_packed = pickle.pack('aN', attr_header, var)
@@ -206,6 +209,11 @@ local function pack(self, secret, id, authenticator, code, length, attr)
             attr_p = pickle.pack('a', attr_packed)
         end
     end
+
+    if attr then
+        length = length + string.len(attr_p)
+    end
+    length = length + string.len(code) + string.len(id) + string.len(authenticator)
 
     local datagramm = pickle.pack('bbna', code, id, length, authenticator)
 
