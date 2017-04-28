@@ -141,7 +141,23 @@ local function unpack(self, msg, host, secret)
                     {7,  1},  -- Framed-Protocol
                     {13, 1},  -- Framed-Compression
                     {85, 60}, -- Acct-Interim-Interval
-                    {6,  2}   -- Service-Type
+                    {6,  2},   -- Service-Type
+                    {18, 'Authorized!'}, -- Reply-Message
+                    --
+                    -- Vendor-Specific:
+                    -- 1 is Vendor type
+                    -- 41268 is number from https://www.iana.org/assignments/enterprise-numbers/enterprise-numbers
+                    --
+                    {26, 41268, 1, 'subscriber-session-duration:=360000'},
+                    {26, 41268, 1, 'subscriber-route-client-ip:=192.168.0.2/24'},
+                    {26, 41268, 1, 'subscriber-route-interface-ip:=192.168.0.254/24'},
+                    {26, 41268, 1, 'subscriber-lease-time:=3600'},
+                    {26, 41268, 1, 'subscriber-description:=TESTDESCR'},
+                    {26, 41268, 1, 'subscriber-dns-servers:=127.0.0.1'},
+                    {26, 41268, 1, 'subscriber-acl-in:=ACL_PERMIT_ANY_IN'},
+                    {26, 41268, 1, 'subscriber-acl-out:=ACL_PERMIT_ANY_OUT'},
+                    {26, 41268, 1, 'subscriber-policy-qos-in:=QOS_50000K_IN'},
+                    {26, 41268, 1, 'subscriber-policy-qos-out:=QOS_50000K_OUT'},
                 }
                 datagramm = self:pack(secret, id, authenticator, 2, attr)
                 log.info('User %s has authenticated', username)
@@ -192,7 +208,7 @@ end
 local function pack(self, secret, id, authenticator, code, attr)
     log.debug('Packing response to %s', id)
     local attr_p = nil
-    local length = 0
+    local length = 20
 
     if attr == nil then
         attr = {}
@@ -200,9 +216,32 @@ local function pack(self, secret, id, authenticator, code, attr)
 
     for _, att in pairs(attr) do
         local atype, var = att[1], att[2]
-        log.debug('%10d\t%5s\t[%2s]\t%20s\t%s\t', id, 6, atype, self.rp.attr[atype], var)
-        local attr_header = pickle.pack('bb', atype, 6)
-        local attr_packed = pickle.pack('aN', attr_header, var)
+        local Attribute = self.rp.attr[atype]
+        local attr_header, attr_packed
+
+        log.debug('%10d\t%5s\t[%2s]\t%20s\t%s\t', id, 6, atype, Attribute, var)
+
+        if
+            -- Add more here if you need
+            Attribute == 'User-Name' or
+            Attribute == 'User-Password' or
+            Attribute == 'Filter-Id' or
+            Attribute == 'Reply-Message' or
+            Attribute == 'Acct-Session-Id'
+        then
+            attr_header = pickle.pack('bb', atype, 2 + string.len(var))
+            attr_packed = pickle.pack('aa', attr_header, var)
+        elseif Attribute == 'Vendor-Specific' then
+            local value, v_type = att[4], att[3]
+            local v_size = string.len(value)
+            attr_header = pickle.pack('bb', atype, 2 + 6 + v_size)
+            -- 2 is 'Vendor type' and 'Vendor length' bytes
+            attr_packed = pickle.pack('aNbba', attr_header, var, v_type, v_size + 2, value)
+        else
+            attr_header = pickle.pack('bb', atype, 6)
+            attr_packed = pickle.pack('aN', attr_header, var)
+        end
+
         if attr_p ~= nil then
             attr_p = pickle.pack('aa', attr_p, attr_packed)
         else
@@ -213,7 +252,6 @@ local function pack(self, secret, id, authenticator, code, attr)
     if attr then
         length = length + string.len(attr_p)
     end
-    length = length + string.len(code) + string.len(id) + string.len(authenticator)
 
     local datagramm = pickle.pack('bbna', code, id, length, authenticator)
 
